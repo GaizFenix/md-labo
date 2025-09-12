@@ -1,5 +1,4 @@
 from sklearn import cluster as c
-import os
 
 import numpy as np
 import struct
@@ -47,7 +46,7 @@ class MnistDataloader(object):
         return (x_train, y_train),(x_test, y_test)        
 
 def run():
-    input_path = os.getcwd() + "data"
+    input_path = "data"
     training_images_filepath = join(input_path, 'train-images.idx3-ubyte')
     training_labels_filepath = join(input_path, 'train-labels.idx1-ubyte')
     test_images_filepath = join(input_path, 't10k-images.idx3-ubyte')
@@ -67,6 +66,8 @@ def run():
             if (title_text != ''):
                 plt.title(title_text, fontsize = 15);        
             index += 1
+        plt.tight_layout()
+        plt.show()
 
     # Load MINST dataset
     mnist_dataloader = MnistDataloader(training_images_filepath, training_labels_filepath, test_images_filepath, test_labels_filepath)
