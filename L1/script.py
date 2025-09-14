@@ -1,6 +1,7 @@
 from sklearn.cluster import KMeans
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
-from sklearn.metrics import confusion_matrix
+from scipy.optimize import linear_sum_assignment
 
 from loader import MnistDataloader
 
@@ -9,8 +10,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-NUM_CLUSTERS = 40
+NUM_CLUSTERS = 10
 NUM_CLASSES = 10
+SEED = 18
+
 
 def run():
     input_path = "data"
@@ -42,75 +45,56 @@ def run():
     plt.show()
     '''
 
-    # Step 2: Try clustering to see how many groups form
-    kmeans = KMeans(n_clusters=NUM_CLUSTERS, random_state=18)
-    clusters = kmeans.fit_predict(x_train_flatten)
+    methods = {
+        "KMeans" : KMeans(n_clusters=NUM_CLUSTERS, random_state=SEED, n_init="auto")
+        # "Agglomerative" : AgglomerativeClustering(n_clusters=NUM_CLUSTERS),
+    }
 
-    '''
-    # Plot clusters without using labels (unsupervised view)
-    plt.figure(figsize=(10, 8))
-    plt.scatter(X_pca[:, 0], X_pca[:, 1], c=clusters, cmap='tab10', s=10)
-    plt.title("KMeans Clusters (k=10) on PCA-reduced MNIST")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.show()
-    '''
+    for name, model in methods.items():
+        print(f"\n=== {name} ===")
+        clusters = model.fit_predict(x_train_flatten)
 
-    # Class-to-cluster evaluation
-    matrix = np.zeros((NUM_CLASSES, NUM_CLUSTERS), dtype=int)
+        # Build class x cluster matrix
+        unique_clusters = np.unique(clusters)
+        matrix = np.zeros((NUM_CLASSES, len(unique_clusters)), dtype=int)
+        for true_label, cluster_id in zip(y_train_flatten, clusters):
+            col = np.where(unique_clusters == cluster_id)[0][0]
+            matrix[true_label, col] += 1
+        # row_totals = matrix.sum(axis=1, keepdims=True)
+        # matrix_percent = matrix / np.maximum(row_totals, 1) * 100
 
-    for true_label, cluster_id in zip(y_train_flatten, clusters):
-        matrix[true_label, cluster_id] += 1
+        # class-to-cluster accuracy
+        row_max = matrix.max(axis=1)
+        total_correct = row_max.sum()
+        total_samples = matrix.sum()
+        accuracy = total_correct / total_samples
+        print(f"{name} - Class-to-cluster accuracy: {accuracy:.4f}")
 
-    # Normalize rows to percentages (optional)
-    matrix_percent = matrix / matrix.sum(axis=1, keepdims=True) * 100
+        # Hungarian algorithm to find best 1-to-1 match between digits and clusters
+        # Use negative counts as costs (we want to maximize costs)
+        cost = -matrix
+        row_ind, col_ind = linear_sum_assignment(cost)
 
-    # Plot heatmap
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(matrix_percent, annot=True, fmt=".1f", cmap="YlGnBu",
-                xticklabels=[f"Cluster {i}" for i in range(NUM_CLUSTERS)],
-                yticklabels=[f"Digit {i}" for i in range(NUM_CLASSES)])
-    plt.xlabel("Cluster")
-    plt.ylabel("True Digit Class")
-    plt.title("Class-to-Cluster Assignment (%)")
-    plt.tight_layout()
-    plt.show()
+        # col_ind[i] = best cluster index for digit 1 (row i)
+        ordered_clusters = col_ind.tolist()
 
-    '''
-    # Helper function to show a list of images with their relating titles
-    def show_images(images, title_texts):
-        cols = 5
-        rows = int(len(images)/cols) + 1
-        plt.figure(figsize=(30,20))
-        index = 1    
-        for x in zip(images, title_texts):        
-            image = x[0]        
-            title_text = x[1]
-            plt.subplot(rows, cols, index)        
-            plt.imshow(image, cmap=plt.cm.gray)
-            if (title_text != ''):
-                plt.title(title_text, fontsize = 15);        
-            index += 1
+        # Reorder columns of matrix
+        matrix_reordered = matrix[:, ordered_clusters]
+
+        # Percent
+        row_totals = matrix_reordered.sum(axis=1, keepdims=True)
+        matrix_percent = matrix_reordered / np.maximum(row_totals, 1) * 100
+
+        # Plot heatmap
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(matrix_percent, annot=True, fmt=".1f", cmap="YlGnBu",
+                    xticklabels=[f"Cl {int(unique_clusters[c])}" for c in ordered_clusters],
+                    yticklabels=[f"Digit {i}" for i in range(NUM_CLASSES)])
+        plt.xlabel("Cluster")
+        plt.ylabel("True Digit Class")
+        plt.title(f"{name}: Class-to-Cluster (%)")
         plt.tight_layout()
         plt.show()
-    '''
-
-    '''
-    # Show some random training and test images 
-    images_2_show = []
-    titles_2_show = []
-    for i in range(0, 10):
-        r = random.randint(1, 60000)
-        images_2_show.append(x_train[r])
-        titles_2_show.append('training image [' + str(r) + '] = ' + str(y_train[r]))    
-
-    for i in range(0, 5):
-        r = random.randint(1, 10000)
-        images_2_show.append(x_test[r])        
-        titles_2_show.append('test image [' + str(r) + '] = ' + str(y_test[r]))    
-
-    show_images(images_2_show, titles_2_show)
-    '''
 
 if __name__ == "__main__":
     run()
