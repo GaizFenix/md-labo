@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-NUM_CLUSTERS = [10, 15, 18]
+NUM_CLUSTERS = 10
 NUM_CLASSES = 10
 SEED = 18
 
@@ -30,7 +30,6 @@ def run():
     x_train_flatten = np.array([np.array(img).flatten() for img in x_train])
     y_train_flatten = np.array(y_train)
 
-    '''
     # Step 1: PCA to 2D for visualization
     pca = PCA(n_components=2)
     X_pca = pca.fit_transform(x_train_flatten)
@@ -43,80 +42,76 @@ def run():
     plt.xlabel("PC1")
     plt.ylabel("PC2")
     plt.show()
+
+    print(f"\n=== KMeans (k={NUM_CLUSTERS}) ===")
+    model = KMeans(n_clusters=NUM_CLUSTERS, random_state=SEED, n_init="auto")
+    clusters = model.fit_predict(x_train_flatten)
+
+    # Build class x cluster matrix
+    unique_clusters, counts = np.unique(clusters, return_counts=True)
+    cluster_sizes = {int(c): int(n) for c, n in zip(unique_clusters, counts)}
+    matrix = np.zeros((NUM_CLASSES, len(unique_clusters)), dtype=int)
+    for true_label, cluster_id in zip(y_train_flatten, clusters):
+        col = np.where(unique_clusters == cluster_id)[0][0]
+        matrix[true_label, col] += 1
+
+    '''
+    # class-to-cluster accuracy
+    row_max = matrix.max(axis=1)
+    total_correct = row_max.sum()
+    total_samples = matrix.sum()
+    accuracy = total_correct / total_samples
+    print(f"KMeans - Class-to-cluster accuracy: {accuracy:.4f}")
     '''
 
-    print(f"Number of training samples: {len(y_train_flatten)}")
+    # For each cluster, find dominant class and its % purity
+    dominant_class = matrix.argmax(axis=0)
+    cluster_to_digit = {int(cl): int(d) for cl, d in zip(unique_clusters, dominant_class)}
+    merged_labels = np.array([cluster_to_digit[c] for c in clusters])
 
-    for k in NUM_CLUSTERS:
-        print(f"\n=== KMeans (k={k}) ===")
-        model = KMeans(n_clusters=k, random_state=SEED, n_init="auto")
-        clusters = model.fit_predict(x_train_flatten)
+    # Group clusters by their assigned digit
+    merged_map = {}
+    for cl, d in cluster_to_digit.items():
+        merged_map.setdefault(d, []).append(int(cl))
 
-        # Build class x cluster matrix
-        unique_clusters, counts = np.unique(clusters, return_counts=True)
-        cluster_sizes = {int(c): int(n) for c, n in zip(unique_clusters, counts)}
-        matrix = np.zeros((NUM_CLASSES, len(unique_clusters)), dtype=int)
-        for true_label, cluster_id in zip(y_train_flatten, clusters):
-            col = np.where(unique_clusters == cluster_id)[0][0]
-            matrix[true_label, col] += 1
+    print("\nOriginal clusters merged → digit (with sizes):")
+    for d in range(NUM_CLASSES):
+        cl_list = merged_map.get(d, [])
+        total = sum(cluster_sizes[c] for c in cl_list)
+        sizes = ", ".join(f"{c}({cluster_sizes[c]})" for c in cl_list)
+        print(f"  Digit {d}: [{sizes}]  total={total}")
 
-        '''
-        # class-to-cluster accuracy
-        row_max = matrix.max(axis=1)
-        total_correct = row_max.sum()
-        total_samples = matrix.sum()
-        accuracy = total_correct / total_samples
-        print(f"KMeans - Class-to-cluster accuracy: {accuracy:.4f}")
-        '''
+    # Now build the merged class x digit matrix (10 x 10)
+    merged_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
+    for true_label, merged in zip(y_train_flatten, merged_labels):
+        merged_matrix[true_label, merged] += 1
 
-        # For each cluster, find dominant class and its % purity
-        dominant_class = matrix.argmax(axis=0)
-        cluster_to_digit = {int(cl): int(d) for cl, d in zip(unique_clusters, dominant_class)}
-        merged_labels = np.array([cluster_to_digit[c] for c in clusters])
+    print(f"Total samples in merged matrix: {merged_matrix.sum()}")
 
-        # Group clusters by their assigned digit
-        merged_map = {}
-        for cl, d in cluster_to_digit.items():
-            merged_map.setdefault(d, []).append(int(cl))
+    # Hungarian algorithm to find best 1-to-1 match between digits and clusters
+    # Use negative counts as costs (we want to maximize costs)
+    cost = -merged_matrix
+    row_ind, col_ind = linear_sum_assignment(cost)
+    ordered_clusters = col_ind.tolist()
 
-        print("\nOriginal clusters merged → digit (with sizes):")
-        for d in range(NUM_CLASSES):
-            cl_list = merged_map.get(d, [])
-            total = sum(cluster_sizes[c] for c in cl_list)
-            sizes = ", ".join(f"{c}({cluster_sizes[c]})" for c in cl_list)
-            print(f"  Digit {d}: [{sizes}]  total={total}")
+    # Reorder columns of matrix
+    matrix_reordered = merged_matrix[:, ordered_clusters]
 
-        # Now build the merged class x digit matrix (10 x 10)
-        merged_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
-        for true_label, merged in zip(y_train_flatten, merged_labels):
-            merged_matrix[true_label, merged] += 1
+    # Accuracy
+    row_max = matrix_reordered.max(axis=1)
+    accuracy = row_max.sum() / matrix_reordered.sum()
+    print(f"Class-to-cluster accuracy after merge: {accuracy:.4f}")
 
-        print(f"Total samples in merged matrix: {merged_matrix.sum()}")
-
-        # Hungarian algorithm to find best 1-to-1 match between digits and clusters
-        # Use negative counts as costs (we want to maximize costs)
-        cost = -merged_matrix
-        row_ind, col_ind = linear_sum_assignment(cost)
-        ordered_clusters = col_ind.tolist()
-
-        # Reorder columns of matrix
-        matrix_reordered = merged_matrix[:, ordered_clusters]
-
-        # Accuracy
-        row_max = matrix_reordered.max(axis=1)
-        accuracy = row_max.sum() / matrix_reordered.sum()
-        print(f"Class-to-cluster accuracy after merge: {accuracy:.4f}")
-
-        # Plot heatmap
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(matrix_reordered, annot=True, fmt=".1f", cmap="YlGnBu",
-                    xticklabels=[f"Cl {int(unique_clusters[c])}" for c in ordered_clusters],
-                    yticklabels=[f"Digit {i}" for i in range(NUM_CLASSES)])
-        plt.xlabel("Clusters")
-        plt.ylabel("True Digit")
-        plt.title(f"KMeans clustering (k={k}) merged -> 10 classes")
-        plt.tight_layout()
-        plt.show()
+    # Plot heatmap
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(matrix_reordered, annot=True, fmt=".1f", cmap="YlGnBu",
+                xticklabels=[f"Cl {int(unique_clusters[c])}" for c in ordered_clusters],
+                yticklabels=[f"Digit {i}" for i in range(NUM_CLASSES)])
+    plt.xlabel("Clusters")
+    plt.ylabel("True Digit")
+    plt.title(f"KMeans clustering (k={k}) merged -> 10 classes")
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     run()

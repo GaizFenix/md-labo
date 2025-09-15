@@ -1,6 +1,5 @@
 from sklearn.cluster import KMeans
 # from sklearn.cluster import AgglomerativeClustering # Way too much time needed
-from sklearn.decomposition import PCA
 from scipy.optimize import linear_sum_assignment
 
 from loader import MnistDataloader
@@ -109,7 +108,7 @@ def run():
 
         # Plot heatmap
         plt.figure(figsize=(10, 8))
-        sns.heatmap(matrix_reordered, annot=True, fmt=".1f", cmap="YlGnBu",
+        sns.heatmap(matrix_reordered, annot=True, fmt="d", cmap="YlGnBu",
                     xticklabels=[f"Cl {int(unique_clusters[c])}" for c in ordered_clusters],
                     yticklabels=[f"Digit {i}" for i in range(NUM_CLASSES)])
         plt.xlabel("Clusters")
