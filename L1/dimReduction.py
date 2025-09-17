@@ -1,6 +1,6 @@
 from sklearn.cluster import KMeans
-# from sklearn.cluster import AgglomerativeClustering # Way too much time needed
 from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 from scipy.optimize import linear_sum_assignment
 
 from loader import MnistDataloader
@@ -10,9 +10,62 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-NUM_CLUSTERS = 10
 NUM_CLASSES = 10
 SEED = 18
+
+
+def class_cluster_eval(y_true, cluster_ids, num_classes=NUM_CLASSES):
+    # Build matrix (true digit x cluster)
+    mat = np.zeros((num_classes, num_classes), dtype=int)
+    for t, c in zip(y_true, cluster_ids):
+        mat[t, c] += 1
+
+    # Costs for Hungarian algorithm
+    cost = -mat
+    _, col_ind = linear_sum_assignment(cost)
+
+    # Reorder columns by Hungarian alignment
+    cm = mat[:, col_ind]
+
+    # cluster_id -> predicted digit index (column in cm)
+    cluster_to_digit = {int(col_id): int(j) for j, col_id in enumerate(col_ind)}
+
+    # Compute accuracy
+    acc = cm.trace() / cm.sum()
+    return cm, acc, cluster_to_digit
+
+def plot_case(title, X_plot2d, y_true, pred_digits, conf_mat):
+    """
+    Two-panel figure:
+      left: 200-point scatter (color = predicted digit, text = true digit)
+      right: Confusion matrix heatmap (counts, integers)
+    """
+    rng = np.random.default_rng(SEED)
+    idx = rng.choice(len(y_true), size=200, replace=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Left panel: scatter with labels
+    ax = axes[0]
+    sc = ax.scatter(X_plot2d[idx, 0], X_plot2d[idx, 1], c=pred_digits[idx], s=20, cmap='tab10')
+    for i in idx:
+        ax.text(X_plot2d[i, 0], X_plot2d[i, 1], str(int(y_true[i])), fontsize=7,
+                ha='center', va='center')
+    ax.set_title(f"{title} — sample of 200\n(color = predicted digit; text = true digit)")
+    ax.set_xlabel("Dim 1")
+    ax.set_ylabel("Dim 2")
+
+    # Right panel: confusion matrix
+    ax = axes[1]
+    sns.heatmap(conf_mat, ax=ax, annot=True, fmt="d", cmap="YlGnBu",
+                xticklabels=[f"D{i}" for i in range(NUM_CLASSES)],
+                yticklabels=[f"D{i}" for i in range(NUM_CLASSES)])
+    ax.set_xlabel("Predicted (after alignment)")
+    ax.set_ylabel("True digit")
+    ax.set_title("Class → Cluster (counts)")
+
+    plt.tight_layout()
+    plt.show()
 
 
 def run():
@@ -22,96 +75,48 @@ def run():
     test_images_filepath = join(input_path, 't10k-images.idx3-ubyte')
     test_labels_filepath = join(input_path, 't10k-labels.idx1-ubyte')
 
-    # Load MINST dataset
-    mnist_dataloader = MnistDataloader(training_images_filepath, training_labels_filepath, test_images_filepath, test_labels_filepath)
-    (x_train, y_train), (x_test, y_test) = mnist_dataloader.load_data()
+    # Load MNIST
+    mnist = MnistDataloader(training_images_filepath, training_labels_filepath,
+                            test_images_filepath, test_labels_filepath)
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
 
     # Flatten train data
-    x_train_flatten = np.array([np.array(img).flatten() for img in x_train])
-    y_train_flatten = np.array(y_train)
+    X = np.array([np.array(img).flatten() for img in x_train], dtype=np.float32)
+    y = np.array(y_train, dtype=np.int32)
+    n = len(y)
+    print(f"Training samples: {n}")
 
-    # Step 1: PCA to 2D for visualization
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(x_train_flatten)
+    results = []
 
-    # Plot the 2D PCA projection colored by true digit label
-    plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=y_train_flatten, cmap='tab10', s=10)
-    plt.legend(*scatter.legend_elements(), title="Digits")
-    plt.title("MNIST projected to 2D using PCA")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.show()
+    # -------- Case A: No DR (cluster in pixel space); plot with PCA(2) --------
+    kmeans_raw = KMeans(n_clusters=NUM_CLASSES, random_state=SEED, n_init="auto")
+    clusters_raw = kmeans_raw.fit_predict(X)
+    cm_raw, acc_raw, cl2dig_raw = class_cluster_eval(y, clusters_raw)
+    pred_digits_raw = np.vectorize(lambda c: cl2dig_raw[c])(clusters_raw)  # color by predicted digit
+    # 2D plot coords for visualization only
+    X_plot_raw = PCA(n_components=2, random_state=SEED).fit_transform(X)
+    plot_case("KMeans on raw pixels", X_plot_raw, y, pred_digits_raw, cm_raw)
+    results.append(("Raw", acc_raw))
 
-    print(f"\n=== KMeans (k={NUM_CLUSTERS}) ===")
-    model = KMeans(n_clusters=NUM_CLUSTERS, random_state=SEED, n_init="auto")
-    clusters = model.fit_predict(x_train_flatten)
+    # -------- Case B: PCA → KMeans (use 50 PCs), plot with same 2D PCA --------
+    X_pca50 = PCA(n_components=100, random_state=SEED).fit_transform(X)
+    kmeans_pca = KMeans(n_clusters=NUM_CLASSES, random_state=SEED, n_init="auto")
+    clusters_pca = kmeans_pca.fit_predict(X_pca50)
+    cm_pca, acc_pca, cl2dig_pca = class_cluster_eval(y, clusters_pca)
+    pred_digits_pca = np.vectorize(lambda c: cl2dig_pca[c])(clusters_pca)
+    # For visualization, use PCA(2) on the 50D space (cleaner than pixel PCA(2))
+    X_plot_pca2 = PCA(n_components=2, random_state=SEED).fit_transform(X_pca50)
+    plot_case("PCA(50) → KMeans", X_plot_pca2, y, pred_digits_pca, cm_pca)
+    results.append(("PCA(50)", acc_pca))
 
-    # Build class x cluster matrix
-    unique_clusters, counts = np.unique(clusters, return_counts=True)
-    cluster_sizes = {int(c): int(n) for c, n in zip(unique_clusters, counts)}
-    matrix = np.zeros((NUM_CLASSES, len(unique_clusters)), dtype=int)
-    for true_label, cluster_id in zip(y_train_flatten, clusters):
-        col = np.where(unique_clusters == cluster_id)[0][0]
-        matrix[true_label, col] += 1
+    # t-SNE was way too slow on this dataset, and required too much computational power
 
-    '''
-    # class-to-cluster accuracy
-    row_max = matrix.max(axis=1)
-    total_correct = row_max.sum()
-    total_samples = matrix.sum()
-    accuracy = total_correct / total_samples
-    print(f"KMeans - Class-to-cluster accuracy: {accuracy:.4f}")
-    '''
+    # -------- Accuracy table --------
+    print("\nClass-to-cluster accuracy (aligned via Hungarian):")
+    print("-----------------------------------------------")
+    for name, acc in results:
+        print(f"{name:<10}  {acc:.4f}")
 
-    # For each cluster, find dominant class and its % purity
-    dominant_class = matrix.argmax(axis=0)
-    cluster_to_digit = {int(cl): int(d) for cl, d in zip(unique_clusters, dominant_class)}
-    merged_labels = np.array([cluster_to_digit[c] for c in clusters])
-
-    # Group clusters by their assigned digit
-    merged_map = {}
-    for cl, d in cluster_to_digit.items():
-        merged_map.setdefault(d, []).append(int(cl))
-
-    print("\nOriginal clusters merged → digit (with sizes):")
-    for d in range(NUM_CLASSES):
-        cl_list = merged_map.get(d, [])
-        total = sum(cluster_sizes[c] for c in cl_list)
-        sizes = ", ".join(f"{c}({cluster_sizes[c]})" for c in cl_list)
-        print(f"  Digit {d}: [{sizes}]  total={total}")
-
-    # Now build the merged class x digit matrix (10 x 10)
-    merged_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
-    for true_label, merged in zip(y_train_flatten, merged_labels):
-        merged_matrix[true_label, merged] += 1
-
-    print(f"Total samples in merged matrix: {merged_matrix.sum()}")
-
-    # Hungarian algorithm to find best 1-to-1 match between digits and clusters
-    # Use negative counts as costs (we want to maximize costs)
-    cost = -merged_matrix
-    row_ind, col_ind = linear_sum_assignment(cost)
-    ordered_clusters = col_ind.tolist()
-
-    # Reorder columns of matrix
-    matrix_reordered = merged_matrix[:, ordered_clusters]
-
-    # Accuracy
-    row_max = matrix_reordered.max(axis=1)
-    accuracy = row_max.sum() / matrix_reordered.sum()
-    print(f"Class-to-cluster accuracy after merge: {accuracy:.4f}")
-
-    # Plot heatmap
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(matrix_reordered, annot=True, fmt=".1f", cmap="YlGnBu",
-                xticklabels=[f"Cl {int(unique_clusters[c])}" for c in ordered_clusters],
-                yticklabels=[f"Digit {i}" for i in range(NUM_CLASSES)])
-    plt.xlabel("Clusters")
-    plt.ylabel("True Digit")
-    plt.title(f"KMeans clustering (k={k}) merged -> 10 classes")
-    plt.tight_layout()
-    plt.show()
 
 if __name__ == "__main__":
     run()
