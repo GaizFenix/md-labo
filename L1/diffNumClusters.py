@@ -1,6 +1,7 @@
 from sklearn.cluster import KMeans
 # from sklearn.cluster import AgglomerativeClustering # Way too much time needed
 from scipy.optimize import linear_sum_assignment
+from sklearn.metrics import silhouette_score
 
 from loader import MnistDataloader
 
@@ -105,6 +106,10 @@ def run():
         row_max = matrix_reordered.max(axis=1)
         accuracy = row_max.sum() / matrix_reordered.sum()
         print(f"Class-to-cluster accuracy after merge: {accuracy:.4f}")
+
+        # Silhouette
+        sil_score = silhouette_score(x_train_flatten, clusters, sample_size=10000, random_state=SEED)
+        print(f"Silhouette score on reduced set (subsampled 10K, k={k}: {sil_score:.4f})")
 
         # Plot heatmap
         plt.figure(figsize=(10, 8))
