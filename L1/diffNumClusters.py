@@ -1,18 +1,101 @@
 from sklearn.cluster import KMeans
-# from sklearn.cluster import AgglomerativeClustering # Way too much time needed
 from scipy.optimize import linear_sum_assignment
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+from sklearn.decomposition import PCA
 
 from loader import MnistDataloader
 
 from os.path import join
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 import numpy as np
 import seaborn as sns
 
-NUM_CLUSTERS = [10, 15, 18]
+NUM_CLUSTERS = [10, 15, 18, 50, 100, 200]
 NUM_CLASSES = 10
 SEED = 18
+
+
+def build_train_cluster_mapping(y_train, clusters_train):
+    unique_clusters = np.unique(clusters_train)
+    cl2col = {int(c): j for j, c in enumerate(unique_clusters)}
+
+    # train class x cluster
+    M = np.zeros((NUM_CLASSES, len(unique_clusters)), dtype=int)
+    for t, c in zip(y_train, clusters_train):
+        M[t, cl2col[int(c)]] += 1
+
+    # Hungarian: rows=digits, cols=clusters (select 10 clusters)
+    cost = -M
+    row_ind, col_ind = linear_sum_assignment(cost)
+
+    mapping = {}
+    # Assigned by Hungarian
+    for digit, col in zip(row_ind, col_ind):
+        mapping[int(unique_clusters[col])] = int(digit)
+
+    # Any unassigned clusters → dominant digit on train
+    dominant_digits = M.argmax(axis=0)
+    for j, cl in enumerate(unique_clusters):
+        cl_int = int(cl)
+        if cl_int not in mapping:
+            mapping[cl_int] = int(dominant_digits[j])
+
+    return mapping, M, unique_clusters
+
+
+def build_digit_confusion(y_true, pred_digits):
+    """Return 10x10 confusion (rows=true digit, cols=predicted digit)."""
+    cm = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
+    for yt, yp in zip(y_true, pred_digits):
+        cm[int(yt), int(yp)] += 1
+    return cm
+
+
+def internal_metrics(X, labels, sample_sil=10000):
+    """
+    Cohesion/separability metrics (no external labels):
+      - Silhouette (subsampled for speed)
+      - Calinski–Harabasz
+      - Davies–Bouldin
+    """
+    n = len(labels)
+    # Silhouette (subsampled)
+    sil = silhouette_score(X, labels, sample_size=min(sample_sil, n), random_state=SEED)
+    # CH / DB on full set
+    ch = calinski_harabasz_score(X, labels)
+    db = davies_bouldin_score(X, labels)
+    return sil, ch, db
+
+
+def test_plot(k, X_test2d, y_test, pred_digits_test, cm_test):
+    """2-panel figure for the TEST set: left scatter (color=true, number=pred), right confusion matrix."""
+    rng = np.random.default_rng(SEED)
+    idx = rng.choice(len(y_test), size=min(800, len(y_test)), replace=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    cmap = plt.get_cmap('tab10')
+
+    # Left: scatter (color = true digit; number = predicted digit)
+    ax = axes[0]
+    ax.scatter(X_test2d[idx, 0], X_test2d[idx, 1], c=y_test[idx], s=50, cmap=cmap)
+    for i in idx:
+        ax.text(X_test2d[i, 0] + 0.4, X_test2d[i, 1] + 0.4, str(int(pred_digits_test[i])),
+                fontsize=8, ha='left', va='bottom', color='black',
+                path_effects=[pe.withStroke(linewidth=2, foreground='white')])
+    ax.set_title(f"TEST scatter (k={k})\ncolor = true digit; number = predicted")
+    ax.set_xlabel("PC1 (train-fit)"); ax.set_ylabel("PC2 (train-fit)")
+
+    # Right: confusion matrix (test)
+    ax = axes[1]
+    sns.heatmap(cm_test, annot=True, fmt="d", cmap="YlGnBu",
+                xticklabels=[f"D{i}" for i in range(NUM_CLASSES)],
+                yticklabels=[f"D{i}" for i in range(NUM_CLASSES)], ax=ax)
+    ax.set_xlabel("Predicted digit"); ax.set_ylabel("True digit")
+    ax.set_title("Test Confusion Matrix (digits)")
+
+    plt.tight_layout()
+    plt.show()
 
 
 def run():
@@ -22,103 +105,80 @@ def run():
     test_images_filepath = join(input_path, 't10k-images.idx3-ubyte')
     test_labels_filepath = join(input_path, 't10k-labels.idx1-ubyte')
 
-    # Load MINST dataset
-    mnist_dataloader = MnistDataloader(training_images_filepath, training_labels_filepath, test_images_filepath, test_labels_filepath)
-    (x_train, y_train), (x_test, y_test) = mnist_dataloader.load_data()
+    # Load MNIST
+    mnist = MnistDataloader(training_images_filepath, training_labels_filepath,
+                            test_images_filepath, test_labels_filepath)
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
 
-    # Flatten train data
-    x_train_flatten = np.array([np.array(img).flatten() for img in x_train])
-    y_train_flatten = np.array(y_train)
+    # Flatten
+    X_train = np.array([np.array(img).flatten() for img in x_train], dtype=np.float32)
+    y_train = np.array(y_train, dtype=np.int32)
+    X_test  = np.array([np.array(img).flatten() for img in x_test ], dtype=np.float32)
+    y_test  = np.array(y_test , dtype=np.int32)
 
-    '''
-    # Step 1: PCA to 2D for visualization
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(x_train_flatten)
+    print(f"Number of training samples: {len(y_train)}")
+    print(f"Number of test samples:     {len(y_test)}")
 
-    # Plot the 2D PCA projection colored by true digit label
-    plt.figure(figsize=(10, 8))
-    scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=y_train_flatten, cmap='tab10', s=10)
-    plt.legend(*scatter.legend_elements(), title="Digits")
-    plt.title("MNIST projected to 2D using PCA")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.show()
-    '''
+    # PCA(2) for visualization ONLY — fit on TRAIN, transform TEST
+    pca2 = PCA(n_components=2, random_state=SEED).fit(X_train)
+    X_test2d = pca2.transform(X_test)
 
-    print(f"Number of training samples: {len(y_train_flatten)}")
+    # For the final 2x3 grid
+    grid_data = [] # list of (k, cm_test)
+
+    # Table header
+    print("\n=== Cohesion/Separability metrics (higher Sil/CH better, lower DB better) ===")
+    print(f"{'k':>3} | {'Silhouette(train)':>18} {'CH(train)':>12} {'DB(train)':>12} || {'Silhouette(test)':>17} {'CH(test)':>12} {'DB(test)':>12}")
+    print("-"*86)
 
     for k in NUM_CLUSTERS:
         print(f"\n=== KMeans (k={k}) ===")
-        model = KMeans(n_clusters=k, random_state=SEED, n_init="auto")
-        clusters = model.fit_predict(x_train_flatten)
+        km = KMeans(n_clusters=k, random_state=SEED, n_init="auto")
+        clusters_train = km.fit_predict(X_train)
+        clusters_test  = km.predict(X_test)
 
-        # Build class x cluster matrix
-        unique_clusters, counts = np.unique(clusters, return_counts=True)
-        cluster_sizes = {int(c): int(n) for c, n in zip(unique_clusters, counts)}
-        matrix = np.zeros((NUM_CLASSES, len(unique_clusters)), dtype=int)
-        for true_label, cluster_id in zip(y_train_flatten, clusters):
-            col = np.where(unique_clusters == cluster_id)[0][0]
-            matrix[true_label, col] += 1
+        # Metrics (train/test)
+        sil_tr, ch_tr, db_tr = internal_metrics(X_train, clusters_train, sample_sil=10000)
+        sil_te, ch_te, db_te = internal_metrics(X_test,  clusters_test,  sample_sil=10000)
+        print(f"{k:>3} | {sil_tr:18.4f} {ch_tr:12.1f} {db_tr:12.4f} || {sil_te:17.4f} {ch_te:12.1f} {db_te:12.4f}")
 
-        '''
-        # class-to-cluster accuracy
-        row_max = matrix.max(axis=1)
-        total_correct = row_max.sum()
-        total_samples = matrix.sum()
-        accuracy = total_correct / total_samples
-        print(f"KMeans - Class-to-cluster accuracy: {accuracy:.4f}")
-        '''
+        # Build train-based cluster→digit mapping (no leakage)
+        cluster_to_digit, train_M, uniq = build_train_cluster_mapping(y_train, clusters_train)
 
-        # For each cluster, find dominant class and its % purity
-        dominant_class = matrix.argmax(axis=0)
-        cluster_to_digit = {int(cl): int(d) for cl, d in zip(unique_clusters, dominant_class)}
-        merged_labels = np.array([cluster_to_digit[c] for c in clusters])
+        # Predicted digits on TEST using train mapping
+        pred_digits_test = np.array([cluster_to_digit[int(c)] for c in clusters_test], dtype=np.int32)
 
-        # Group clusters by their assigned digit
-        merged_map = {}
-        for cl, d in cluster_to_digit.items():
-            merged_map.setdefault(d, []).append(int(cl))
+        # Test confusion matrix (digits vs predicted digits) — ONLY for visualization/comparison
+        cm_test = build_digit_confusion(y_test, pred_digits_test)
+        grid_data.append((k, cm_test))
 
-        print("\nOriginal clusters merged → digit (with sizes):")
-        for d in range(NUM_CLASSES):
-            cl_list = merged_map.get(d, [])
-            total = sum(cluster_sizes[c] for c in cl_list)
-            sizes = ", ".join(f"{c}({cluster_sizes[c]})" for c in cl_list)
-            print(f"  Digit {d}: [{sizes}]  total={total}")
+        # Plots for TEST
+        test_plot(k, X_test2d, y_test, pred_digits_test, cm_test)
 
-        # Now build the merged class x digit matrix (10 x 10)
-        merged_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
-        for true_label, merged in zip(y_train_flatten, merged_labels):
-            merged_matrix[true_label, merged] += 1
+    # --------------------------
+    # Final 2×3 grid of ConfMats
+    # --------------------------
+    if grid_data:
+        # Consistent color scale across all heatmaps
+        vmax = max(cm.max() for _, cm in grid_data)
 
-        print(f"Total samples in merged matrix: {merged_matrix.sum()}")
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        axes = axes.ravel()
 
-        # Hungarian algorithm to find best 1-to-1 match between digits and clusters
-        # Use negative counts as costs (we want to maximize costs)
-        cost = -merged_matrix
-        row_ind, col_ind = linear_sum_assignment(cost)
-        ordered_clusters = col_ind.tolist()
+        for i, (k, cm) in enumerate(grid_data):
+            ax = axes[i]
+            sns.heatmap(cm, ax=ax, annot=True, fmt="d", cmap="YlGnBu",
+                        vmin=0, vmax=vmax, cbar=False,
+                        xticklabels=[f"D{i}" for i in range(NUM_CLASSES)],
+                        yticklabels=[f"D{i}" for i in range(NUM_CLASSES)])
+            ax.set_title(f"k = {k}")
+            ax.set_xlabel("Predicted"); ax.set_ylabel("True")
 
-        # Reorder columns of matrix
-        matrix_reordered = merged_matrix[:, ordered_clusters]
+        # Hide unused axes if <6 k-values
+        for j in range(len(grid_data), 6):
+            fig.delaxes(axes[j])
 
-        # Accuracy
-        row_max = matrix_reordered.max(axis=1)
-        accuracy = row_max.sum() / matrix_reordered.sum()
-        print(f"Class-to-cluster accuracy after merge: {accuracy:.4f}")
-
-        # Silhouette
-        sil_score = silhouette_score(x_train_flatten, clusters, sample_size=10000, random_state=SEED)
-        print(f"Silhouette score on reduced set (subsampled 10K, k={k}: {sil_score:.4f})")
-
-        # Plot heatmap
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(matrix_reordered, annot=True, fmt="d", cmap="YlGnBu",
-                    xticklabels=[f"Cl {int(unique_clusters[c])}" for c in ordered_clusters],
-                    yticklabels=[f"Digit {i}" for i in range(NUM_CLASSES)])
-        plt.xlabel("Clusters")
-        plt.ylabel("True Digit")
-        plt.title(f"KMeans clustering (k={k}) merged -> 10 classes")
+        fig.suptitle("Test Confusion Matrices for Different k", fontsize=16, y=0.98)
         plt.tight_layout()
         plt.show()
 
